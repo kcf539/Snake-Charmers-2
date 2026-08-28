@@ -161,3 +161,23 @@ class SolowModelClass:
         sim = self.simulate(s_t)
 
         return self.welfare(sim.c)
+
+
+        ### New functional form of saving rate ###
+
+        # alternative savings path: power-law reversion, s_t = s_inf + (s0-s_inf)/(1+t)**p
+    def s_path_power(self,s0,s_inf,p):
+        """ power-law savings path, s_t = s_inf + (s0-s_inf)/(1+t)**p """
+
+        par = self.par
+        t = np.arange(par.T)
+
+        return s_inf + (s0-s_inf)/(1+t)**p
+
+    def evaluate_power(self,s0,s_inf,p):
+        """ welfare of the power-law rule s_t = s_inf + (s0-s_inf)/(1+t)**p """
+
+        s_t = self.s_path_power(s0,s_inf,p)
+        sim = self.simulate(s_t)
+
+        return self.welfare(sim.c)
