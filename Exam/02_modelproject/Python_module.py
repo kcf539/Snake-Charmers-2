@@ -321,3 +321,330 @@ class ConsumerClass:
                   f'evaluations = {res.nfev}, success = {res.success}')
 
         return opt
+
+
+class GovernmentClass(ConsumerClass):
+    """ a government raising revenue from the consumer in ConsumerClass
+
+    Two kinds of instrument:
+
+        1) a lump-sum tax T, which reduces income
+        2) product taxes tau1, tau2, tau3, which raise the three prices
+
+    GovernmentClass inherits from ConsumerClass, so every method from
+    sections 1-3 -- .utility(), .solve(), .solve_grid(), .value_of_choice(),
+    ... -- keeps working exactly as before. .set_taxes() only changes what
+    par.p1, par.p2, par.p3 and par.I *are*; it never touches how they get
+    used.
+
+    """
+
+    def __init__(self, par=None):
+        """ create a government, optionally changing some parameters
+
+        Args:
+
+            par (dict or None): parameters to change from their baseline
+                value, exactly as in ConsumerClass.
+
+        """
+
+        # a. the consumer's own baseline parameters
+        self.setup()
+
+        # b. the tax instruments, all starting at zero
+        self.setup_government()
+
+        # c. overwrite only the parameters we were asked to change
+        if par is not None:
+            for key, value in par.items():
+                self.par.__dict__[key] = value
+
+        # d. remember the prices and income *before* any tax -- must happen
+        #    after c., or a changed baseline price would not be picked up
+        self.sync_pre_tax()
+
+    def setup_government(self):
+        """ add the tax instruments to the parameters, all starting at zero """
+
+        par = self.par
+
+        par.T = 0.0  # lump-sum tax (a transfer if negative)
+
+        par.tau1 = 0.0  # tax rate on food
+        par.tau2 = 0.0  # tax rate on bus trips
+        par.tau3 = 0.0  # tax rate on train trips
+
+    def sync_pre_tax(self):
+        """ store the current prices and income as the pre-tax situation
+
+        Revenue is collected at these prices (eq. 5 uses p_j, not
+        (1+tau_j)*p_j), so they have to be the ones from *before* any tax.
+
+        """
+
+        par = self.par
+
+        par.p1_pre = par.p1
+        par.p2_pre = par.p2
+        par.p3_pre = par.p3
+        par.I_pre = par.I
+
+    ##############################
+    # 1. what the consumer faces #
+    ##############################
+
+    def set_taxes(self, T=0.0, tau1=0.0, tau2=0.0, tau3=0.0):
+        """ set the taxes, and update the prices and income the consumer faces
+
+        The price the consumer pays for good j is (1+tau_j) times the price
+        the seller receives, and income is reduced krone-for-krone by the
+        lump-sum tax. Everything is computed from the *pre-tax* values, so
+        calling this again with different rates never compounds: the result
+        only depends on the rates passed in this call, never on earlier ones.
+
+        Args:
+
+            T (float): lump-sum tax
+            tau1 (float): tax rate on food
+            tau2 (float): tax rate on bus trips
+            tau3 (float): tax rate on train trips
+
+        """
+
+        par = self.par
+
+        # a. remember the taxes themselves, for .tax_revenue()
+        par.T = T
+        par.tau1 = tau1
+        par.tau2 = tau2
+        par.tau3 = tau3
+
+        # b. the prices the consumer faces
+        par.p1 = (1+tau1)*par.p1_pre
+        par.p2 = (1+tau2)*par.p2_pre
+        par.p3 = (1+tau3)*par.p3_pre
+
+        # c. income after the lump-sum tax
+        par.I = par.I_pre - T
+
+    ##########################################
+    # 2. revenue, and what the consumer gets #
+    ##########################################
+
+    def tax_revenue(self, opt=None):
+        """ total tax revenue given the taxes currently set (eq. 5)
+
+        Revenue is collected at the price the *seller* receives, so the tax
+        paid on good j is tau_j*p_j_pre*x_j, not tau_j*p_j*x_j.
+
+        Args:
+
+            opt (SimpleNamespace): a solution from .solve(). Solved for here
+                if not given -- pass it in when you already have it, to
+                avoid solving the same problem twice.
+
+        Returns:
+
+            (float): tax revenue
+
+        """
+
+        par = self.par
+
+        # a. what the consumer buys, given the taxes currently set
+        if opt is None: opt = self.solve(do_print=False)
+        x1, x2, x3 = self.quantities(opt.s1, opt.w)
+
+        # b. the lump-sum tax, plus the product tax on each good
+        R = par.T + par.tau1*par.p1_pre*x1 + par.tau2*par.p2_pre*x2 + par.tau3*par.p3_pre*x3
+
+        return R
+
+    def revenue_and_utility(self, tau, goods=(2,)):
+        """ revenue and utility when the same tax rate is put on each good in goods
+
+        Args:
+
+            tau (float): the common tax rate
+            goods (tuple): which goods to tax, e.g. (2,) or (2,3) or (1,2,3)
+
+        Returns:
+
+            (tuple): (revenue, utility)
+
+        """
+
+        # a. tau on the goods in goods, zero on the others
+        taus = {1: 0.0, 2: 0.0, 3: 0.0}
+        for good in goods:
+            taus[good] = tau
+        self.set_taxes(T=0.0, tau1=taus[1], tau2=taus[2], tau3=taus[3])
+
+        # b. solve the consumer's problem with these taxes, and its revenue
+        opt = self.solve(do_print=False)
+        R = self.tax_revenue(opt)
+
+        return R, opt.u
+
+    def revenue_and_utility_lump_sum(self, T):
+        """ the same, for a lump-sum tax of T
+
+        Args:
+
+            T (float): the lump-sum tax
+
+        Returns:
+
+            (tuple): (revenue, utility)
+
+        """
+
+        self.set_taxes(T=T)
+        opt = self.solve(do_print=False)
+        R = self.tax_revenue(opt)
+
+        return R, opt.u
+
+    ##########################################
+    # 3. hitting a given revenue requirement #
+    ##########################################
+
+    def max_revenue(self, goods=(2,), tau_max=10.0, N=1001):
+        """ the largest revenue this instrument can ever raise
+
+        A grid over the tax rate is enough, exactly as in section 2.1:
+        compute the revenue at every grid point and keep the best one.
+
+        If the answer comes back at tau_max, the curve was still rising when
+        the grid ran out -- there is no top in the range searched.
+
+        Args:
+
+            goods (tuple): which goods to tax
+            tau_max (float): largest tax rate to consider
+            N (int): number of grid points
+
+        Returns:
+
+            (tuple): (the revenue-maximizing rate, the largest revenue)
+
+        """
+
+        # a. revenue at every point of the grid
+        tau_vec = np.linspace(0, tau_max, N)
+        R_vec = np.array([self.revenue_and_utility(tau, goods=goods)[0] for tau in tau_vec])
+
+        # b. the best point
+        i_max = np.argmax(R_vec)
+
+        return tau_vec[i_max], R_vec[i_max]
+
+    def find_tax_rate(self, R_target, goods=(2,), bracket=(1e-10, 1.0)):
+        """ the tax rate on goods that raises exactly R_target
+
+        Careful: revenue is not always increasing in the tax rate (section
+        4.3). There can be two rates that raise the same revenue, and a
+        revenue target above the largest possible revenue cannot be reached
+        at all. In that case there is no sign change in the bracket, and the
+        root-finder raises a ValueError -- which is the correct answer, not
+        a bug. Catch it and return np.nan.
+
+        Args:
+
+            R_target (float): the revenue requirement
+            goods (tuple): which goods to tax
+            bracket (tuple): interval of tax rates to search in
+
+        Returns:
+
+            (float): the tax rate, or np.nan if the target cannot be reached
+
+        """
+
+        def f(tau):
+            R, u = self.revenue_and_utility(tau, goods=goods)
+            return R - R_target
+
+        try:
+            res = optimize.root_scalar(f, bracket=bracket, method='brentq')
+            return res.root
+        except ValueError:
+            return np.nan
+
+
+class GreenGovernmentClass(GovernmentClass):
+    """ a government that also weighs the CO2 from bus and train trips
+
+    The consumer is unchanged from GovernmentClass: a private optimizer who
+    only reacts to prices, exactly as in section 4. Only the government's
+    own objective is different -- besides revenue, it now also cares about
+    the CO2 the taxed consumer ends up emitting.
+
+    A tax intensity k puts an ad valorem rate tau_j = k*c_j on bus and train,
+    proportional to how much each one pollutes, so a bus trip (c2=0.90) is
+    always taxed three times as hard as a train trip (c3=0.30). Welfare at
+    intensity k is the consumer's own private utility, net of the
+    government's value of the emissions it causes:
+
+        W(k) = u(x*(k)) - delta*E(x*(k))
+
+    """
+
+    def setup_government(self):
+        super().setup_government()
+        par = self.par
+
+        par.c2 = 0.90   # kg CO2 per bus trip
+        par.c3 = 0.30   # kg CO2 per train trip
+        par.delta = 0.8  # the government's cost per kg of CO2, in utility units
+
+    def emissions(self, x2, x3):
+        """ total CO2 emitted by x2 bus trips and x3 train trips """
+
+        par = self.par
+
+        return par.c2*x2 + par.c3*x3
+
+    def welfare(self, k):
+        """ private utility net of delta*emissions, at green tax intensity k
+
+        Args:
+
+            k (float): tax intensity; bus and train are taxed at tau_j=k*c_j
+
+        Returns:
+
+            (tuple): (welfare, utility, emissions, revenue)
+
+        """
+
+        par = self.par
+
+        self.set_taxes(tau2=k*par.c2, tau3=k*par.c3)
+        opt = self.solve(do_print=False)
+        x1, x2, x3 = self.quantities(opt.s1, opt.w)
+        E = self.emissions(x2, x3)
+        R = self.tax_revenue(opt)
+
+        return opt.u - par.delta*E, opt.u, E, R
+
+    def optimal_green_tax(self, k_max=2.5, N=1001):
+        """ the welfare-maximizing tax intensity, by a grid search over k
+
+        Args:
+
+            k_max (float): largest tax intensity to consider
+            N (int): number of grid points
+
+        Returns:
+
+            (tuple): (k_star, W_star)
+
+        """
+
+        k_vec = np.linspace(0, k_max, N)
+        W_vec = np.array([self.welfare(k)[0] for k in k_vec])
+        i_max = np.argmax(W_vec)
+
+        return k_vec[i_max], W_vec[i_max]
