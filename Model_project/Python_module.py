@@ -573,106 +573,78 @@ class GovernmentClass(ConsumerClass):
             return np.nan
 
 
-class ExternalityConsumerClass(ConsumerClass):
-    """ a consumer who also cares about the CO2 pollution from travelling
+class GreenGovernmentClass(GovernmentClass):
+    """ a government that also weighs the CO2 from bus and train trips
 
-    Section 5's extension. Every bus trip and every train trip emits some
-    CO2, and the consumer's utility falls in the total emitted -- e.g.
-    because they are environmentally conscious, or simply dislike knowing
-    that their travel contributes to climate change. Buses run on diesel and
-    (Danish) trains run mostly on electricity, so a bus trip is given a
-    higher emission rate than a train trip.
+    The consumer is unchanged from GovernmentClass: a private optimizer who
+    only reacts to prices, exactly as in section 4. Only the government's
+    own objective is different -- besides revenue, it now also cares about
+    the CO2 the taxed consumer ends up emitting.
 
-    Concretely, emissions are linear in the two travel quantities,
+    A tax intensity k puts an ad valorem rate tau_j = k*c_j on bus and train,
+    proportional to how much each one pollutes, so a bus trip (c2=0.90) is
+    always taxed three times as hard as a train trip (c3=0.30). Welfare at
+    intensity k is the consumer's own private utility, net of the
+    government's value of the emissions it causes:
 
-        E(x2,x3) = c2*x2 + c3*x3,      c2 > c3 > 0,
-
-    and enter utility on top of the ordinary CES utility from section 1,
-
-        U(x1,x2,x3) = u(x1,x2,x3) - gamma*E(x2,x3),      gamma > 0.
-
-    u(x1,x2,x3) itself -- .utility() -- is left completely alone, so it still
-    means exactly what it meant in section 1: the private enjoyment of the
-    bundle, ignoring pollution. Only .value_of_choice() is changed, to the
-    *net* of that enjoyment and the emissions it causes. Since .solve() and
-    .solve_grid() are both written in terms of .value_of_choice() (via
-    .objective()), inheriting them unchanged is enough to make them solve
-    the *right* problem -- nothing about optimization has to be touched.
+        W(k) = u(x*(k)) - delta*E(x*(k))
 
     """
 
-    def setup(self):
-        """ the baseline parameters, plus the two emission rates and the
-        marginal disutility of CO2 """
-
-        # a. everything from ConsumerClass
-        super().setup()
+    def setup_government(self):
+        super().setup_government()
         par = self.par
 
-        # b. kg of CO2 per trip -- a bus trip pollutes three times as much
-        #    as a train trip
-        par.c2 = 0.90  # kg CO2 per bus trip
-        par.c3 = 0.30  # kg CO2 per train trip
-
-        # c. marginal disutility of one kg of CO2, in utility units
-        par.gamma = 0.15
+        par.c2 = 0.90   # kg CO2 per bus trip
+        par.c3 = 0.30   # kg CO2 per train trip
+        par.delta = 0.8  # the government's cost per kg of CO2, in utility units
 
     def emissions(self, x2, x3):
-        """ total CO2 emitted by x2 bus trips and x3 train trips
-
-        Args:
-
-            x2 (float or ndarray): quantity of bus trips
-            x3 (float or ndarray): quantity of train trips
-
-        Returns:
-
-            (float or ndarray): kg of CO2 emitted
-
-        """
+        """ total CO2 emitted by x2 bus trips and x3 train trips """
 
         par = self.par
 
         return par.c2*x2 + par.c3*x3
 
-    def utility_with_externality(self, x1, x2, x3):
-        """ utility net of the disutility from CO2 (U above)
+    def welfare(self, k):
+        """ private utility net of delta*emissions, at green tax intensity k
 
         Args:
 
-            x1 (float or ndarray): quantity of food
-            x2 (float or ndarray): quantity of bus trips
-            x3 (float or ndarray): quantity of train trips
+            k (float): tax intensity; bus and train are taxed at tau_j=k*c_j
 
         Returns:
 
-            (float or ndarray): utility, net of the externality
+            (tuple): (welfare, utility, emissions, revenue)
 
         """
 
         par = self.par
 
-        u = self.utility(x1, x2, x3)
+        self.set_taxes(tau2=k*par.c2, tau3=k*par.c3)
+        opt = self.solve(do_print=False)
+        x1, x2, x3 = self.quantities(opt.s1, opt.w)
         E = self.emissions(x2, x3)
+        R = self.tax_revenue(opt)
 
-        return u - par.gamma*E
+        return opt.u - par.delta*E, opt.u, E, R
 
-    def value_of_choice(self, s1, w):
-        """ utility net of the externality, of the bundle implied by the
-        nested shares -- overrides ConsumerClass so the optimizer targets
-        the *net* of enjoyment and pollution, not enjoyment alone
+    def optimal_green_tax(self, k_max=2.5, N=1001):
+        """ the welfare-maximizing tax intensity, by a grid search over k
 
         Args:
 
-            s1 (float or ndarray): share of income spent on food
-            w (float or ndarray): share of the travel budget spent on the bus
+            k_max (float): largest tax intensity to consider
+            N (int): number of grid points
 
         Returns:
 
-            (float or ndarray): utility, net of the externality
+            (tuple): (k_star, W_star)
 
         """
 
-        x1, x2, x3 = self.quantities(s1, w)
+        k_vec = np.linspace(0, k_max, N)
+        W_vec = np.array([self.welfare(k)[0] for k in k_vec])
+        i_max = np.argmax(W_vec)
 
-        return self.utility_with_externality(x1, x2, x3)
+        return k_vec[i_max], W_vec[i_max]
